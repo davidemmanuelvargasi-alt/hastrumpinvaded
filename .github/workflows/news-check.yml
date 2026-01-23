@@ -1,0 +1,57 @@
+name: Auto news status checker
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # cada 30 minutos
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch RSS and decide
+        run: |
+          set -e
+
+          # Google News RSS query (adjust keywords anytime)
+          RSS_URL="https://news.google.com/rss/search?q=%22Trump%22%20(invaded%20Mexico%20OR%20invasion%20of%20Mexico%20OR%20U.S.%20troops%20in%20Mexico%20OR%20military%20intervention%20in%20Mexico)&hl=en-US&gl=US&ceid=US:en"
+
+          curl -sL "$RSS_URL" > rss.xml
+
+          # Extract titles (simple parsing)
+          TITLES=$(grep -oP "(?<=<title>).*?(?=</title>)" rss.xml | tail -n +2 | head -n 25)
+
+          STATUS="NO"
+          MATCH="none"
+
+          # Conservative matching to reduce false positives
+          while IFS= read -r t; do
+            tl=$(echo "$t" | tr '[:upper:]' '[:lower:]')
+
+            # Require strong terms; avoid obvious "what if"/"simulation"/"satire"
+            if echo "$tl" | grep -Eq "(invaded mexico|u\.s\. troops in mexico|military intervention in mexico|invasion of mexico)"; then
+              if ! echo "$tl" | grep -Eq "(what if|hypothetical|simulation|satire|parody|game|meme|rumor)"; then
+                STATUS="YES"
+                MATCH="$t"
+                break
+              fi
+            fi
+          done <<< "$TITLES"
+
+          NOW="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          printf '{\n  "status": "%s",\n  "updated": "%s",\n  "matched_headline": "%s"\n}\n' \
+            "$STATUS" "$NOW" "$(echo "$MATCH" | sed 's/"/\\"/g')" > status.json
+
+      - name: Commit status.json if changed
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add status.json
+          git commit -m "Update status.json" || exit 0
+          git push
